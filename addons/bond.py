@@ -276,6 +276,9 @@ class bond(moduleBase):
             # support yes/no attrs
             utils.support_yesno_attrs(attrstoset, ['use_carrier', 'lacp_bypass'])
 
+            # support for 0slow/1fast
+            self._support_for_slow_fast_lacp_rate(attrstoset)
+
             have_attrs_to_set = 1
             self.bondcmd.set_attrs(ifaceobj.name, attrstoset,
                     self.ipcmd.link_down if linkup else None)
@@ -284,6 +287,12 @@ class bond(moduleBase):
         finally:
             if have_attrs_to_set and linkup:
                 self.ipcmd.link_up(ifaceobj.name)
+
+    def _support_for_slow_fast_lacp_rate(self, attrs):
+        if 'lacp_rate' in attrs:
+            value = attrs['lacp_rate']
+            if value in self._bond_lacp_rate_str:
+                attrs['lacp_rate'] = self._bond_lacp_rate_str[value]
 
     def query_check_support_slow_fast_lacp_rate(self, ifaceobj, running_attrs):
         config_val = ifaceobj.get_attr_value_first('bond-lacp-rate')
