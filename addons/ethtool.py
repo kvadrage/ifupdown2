@@ -61,9 +61,9 @@ class ethtool(moduleBase,utilsBase):
         # keep a list of iface objects who have modified link attributes
         self.ifaceobjs_modified_configs = []
 
-    def _post_up(self, ifaceobj, operation='post_up'):
+    def _pre_up(self, ifaceobj, operation='post_up'):
         """
-        _post_up and _pre_down will reset the layer 2 attributes to default policy
+        _pre_up and _pre_down will reset the layer 2 attributes to default policy
         settings.
         """
         if not self.ipcmd.link_exists(ifaceobj.name):
@@ -150,7 +150,7 @@ class ethtool(moduleBase,utilsBase):
                 # we also need to set this here in case we changed
                 # something.  this prevents unconfigured ifaces from resetting to default
                 self.ifaceobjs_modified_configs.append(ifaceobj.name)
-                cmd = 'ethtool -s %s %s' %(ifaceobj.name, cmd)
+                cmd = '/sbin/ethtool -s %s %s' %(ifaceobj.name, cmd)
                 utils.exec_command(cmd)
             except Exception, e:
                 self.log_error('%s: %s' %(ifaceobj.name, str(e)), ifaceobj)
@@ -165,7 +165,7 @@ class ethtool(moduleBase,utilsBase):
                 # we also need to set this here in case we changed
                 # something.  this prevents unconfigured ifaces from resetting to default
                 self.ifaceobjs_modified_configs.append(ifaceobj.name)
-                feccmd = 'ethtool --set-fec %s %s' %(ifaceobj.name, feccmd)
+                feccmd = '/sbin/ethtool --set-fec %s %s' %(ifaceobj.name, feccmd)
                 utils.exec_command(feccmd)
             except Exception, e:
                 self.log_error('%s: %s' %(ifaceobj.name, str(e)), ifaceobj)
@@ -266,10 +266,10 @@ class ethtool(moduleBase,utilsBase):
         running_attr = None
         try:
             if attr == 'autoneg':
-                output = utils.exec_commandl(['ethtool', ifaceobj.name])
+                output = utils.exec_commandl(['/sbin/ethtool', ifaceobj.name])
                 running_attr = self.get_autoneg(ethtool_output=output)
             elif attr == 'fec':
-                output = utils.exec_command('ethtool --show-fec %s'%(ifaceobj.name))
+                output = utils.exec_command('/sbin/ethtool --show-fec %s'%(ifaceobj.name))
                 running_attr = self.get_fec_encoding(ethtool_output=output)
             else:
                 running_attr = self.read_file_oneline('/sys/class/net/%s/%s' % \
@@ -331,7 +331,7 @@ class ethtool(moduleBase,utilsBase):
             ifaceobj.update_config('link-%s' %attr, default)
 
     _run_ops = {'pre-down' : _pre_down,
-                'post-up' : _post_up,
+                'pre-up' : _pre_up,
                 'query-checkcurr' : _query_check,
                 'query-running' : _query_running,
                 'query' : _query}

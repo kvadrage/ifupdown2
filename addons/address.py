@@ -89,13 +89,18 @@ class address(moduleBase):
                       'ip-forward' :
                             { 'help': 'ip forwarding flag',
                               'validvals': ['on', 'off'],
-                              'default' : 'on',
+                              'default' : 'off',
                               'example' : ['ip-forward off']},
                       'ip6-forward' :
                             { 'help': 'ipv6 forwarding flag',
                               'validvals': ['on', 'off'],
-                              'default' : 'on',
+                              'default' : 'off',
                               'example' : ['ip6-forward off']},
+                      'mpls-enable' :
+                            { 'help': 'mpls enable flag',
+                              'validvals': ['yes', 'no'],
+                              'default' : 'no',
+                              'example' : ['mpls-enable yes']},
                 }}
 
     def __init__(self, *args, **kargs):
@@ -104,6 +109,8 @@ class address(moduleBase):
         self._bridge_fdb_query_cache = {}
         self.default_mtu = policymanager.policymanager_api.get_attr_default(module_name=self.__class__.__name__, attr='mtu')
         self.max_mtu = policymanager.policymanager_api.get_module_globals(module_name=self.__class__.__name__, attr='max_mtu')
+        self.ipforward = policymanager.policymanager_api.get_attr_default(module_name=self.__class__.__name__, attr='ip-forward')
+        self.ip6forward = policymanager.policymanager_api.get_attr_default(module_name=self.__class__.__name__, attr='ip6-forward')
 
         if not self.default_mtu:
             self.default_mtu = '1500'
@@ -313,7 +320,7 @@ class address(moduleBase):
         if not ifupdownflags.flags.PERFMODE and purge_addresses == 'yes':
             # if perfmode is not set and purge addresses is not set to 'no'
             # lets purge addresses not in the config
-            runningaddrs = utils.get_normalized_ip_addr(ifaceobj.name, self.ipcmd.addr_get(ifaceobj.name, details=False))
+            runningaddrs = self.ipcmd.get_running_addrs(ifaceobj, details=False)
 
             # if anycast address is configured on 'lo' and is in running config
             # add it to newaddrs so that ifreload doesn't wipe it out
@@ -328,11 +335,14 @@ class address(moduleBase):
             try:
                 # if primary address is not same, there is no need to keep any.
                 # reset all addresses
-                if (newaddrs and runningaddrs and
-                        (newaddrs[0] != runningaddrs[0])):
-                    self.ipcmd.del_addr_all(ifaceobj.name)
+                if newaddrs and runningaddrs and newaddrs[0] != runningaddrs[0]:
+                    skip_addrs = []
                 else:
-                    self.ipcmd.del_addr_all(ifaceobj.name, newaddrs)
+                    skip_addrs = newaddrs or []
+                for addr in runningaddrs or []:
+                    if addr in skip_addrs:
+                        continue
+                    self.ipcmd.addr_del(ifaceobj.name, addr)
             except Exception, e:
                 self.log_warn(str(e))
         if not newaddrs:
@@ -492,6 +502,27 @@ class address(moduleBase):
                 self.sysctl_set('net.ipv6.conf.%s.forwarding' %ifaceobj.name, 1)
 
     def _sysctl_config(self, ifaceobj):
+        setting_default_value = False
+        mpls_enable = ifaceobj.get_attr_value_first('mpls-enable');
+        if not mpls_enable:
+            setting_default_value = True
+            mpls_enable = self.get_mod_subattr('mpls-enable', 'default')
+        mpls_enable = utils.boolean_support_binary(mpls_enable)
+        # File read has been used for better performance
+        # instead of using sysctl command
+        running_mpls_enable = self.read_file_oneline(
+                                '/proc/sys/net/mpls/conf/%s/input'
+                                %ifaceobj.name)
+        if mpls_enable != running_mpls_enable:
+            try:
+                self.sysctl_set('net.mpls.conf.%s.input'
+                                %('/'.join(ifaceobj.name.split("."))),
+                                mpls_enable)
+            except Exception as e:
+                if not setting_default_value:
+                    ifaceobj.status = ifaceStatus.ERROR
+                    self.logger.error('%s: %s' %(ifaceobj.name, str(e)))
+
         if (ifaceobj.link_kind & ifaceLinkKind.BRIDGE):
             self._set_bridge_forwarding(ifaceobj)
             return
@@ -508,8 +539,11 @@ class address(moduleBase):
                 self.log_error('%s: \'ip6-forward\' is not supported for '
                                'bridge port' %ifaceobj.name)
             return
+        setting_default_value = False
         if not ipforward:
-            ipforward = self.get_mod_subattr('ip-forward', 'default')
+            setting_default_value = True
+            ipforward = (self.ipforward or
+                         self.get_mod_subattr('ip-forward', 'default'))
         ipforward = utils.boolean_support_binary(ipforward)
         # File read has been used for better performance
         # instead of using sysctl command
@@ -517,14 +551,20 @@ class address(moduleBase):
                                 '/proc/sys/net/ipv4/conf/%s/forwarding'
                                 %ifaceobj.name)
         if ipforward != running_ipforward:
-            self.sysctl_set('net.ipv4.conf.%s.forwarding'
-                            %('/'.join(ifaceobj.name.split("."))),
-                            ipforward)
+            try:
+                self.sysctl_set('net.ipv4.conf.%s.forwarding'
+                                %('/'.join(ifaceobj.name.split("."))),
+                                ipforward)
+            except Exception as e:
+                if not setting_default_value:
+                    ifaceobj.status = ifaceStatus.ERROR
+                    self.logger.error('%s: %s' %(ifaceobj.name, str(e)))
 
-        setting_default_ip6forward = False
+        setting_default_value = False
         if not ip6forward:
-            setting_default_ip6forward = True
-            ip6forward = self.get_mod_subattr('ip6-forward', 'default')
+            setting_default_value = True
+            ip6forward = (self.ip6forward or
+                          self.get_mod_subattr('ip6-forward', 'default'))
         ip6forward = utils.boolean_support_binary(ip6forward)
         # File read has been used for better performance
         # instead of using sysctl command
@@ -541,8 +581,9 @@ class address(moduleBase):
                 # for example, setting mtu < 1280
                 # In such cases, log error only if user has configured
                 # ip6-forward
-                if not setting_default_ip6forward:
-                    self.log_error('%s: %s' %(ifaceobj.name, str(e)))
+                if not setting_default_value:
+                    ifaceobj.status = ifaceStatus.ERROR
+                    self.logger.error('%s: %s' %(ifaceobj.name, str(e)))
 
     def _up(self, ifaceobj, ifaceobj_getfunc=None):
         if not self.ipcmd.link_exists(ifaceobj.name):
@@ -684,7 +725,7 @@ class address(moduleBase):
             bridgename = ifaceobj.lowerifaces[0]
             vlan = self._get_vlan_id(ifaceobj)
             if self.ipcmd.bridge_is_vlan_aware(bridgename):
-                fdb_addrs = self._get_bridge_fdbs(bridgename, vlan)
+                fdb_addrs = self._get_bridge_fdbs(bridgename, str(vlan))
                 if not fdb_addrs or hwaddress not in fdb_addrs:
                    return False
         return True
@@ -724,6 +765,16 @@ class address(moduleBase):
                 ifaceobjcurr.update_config_with_status('ip6-forward',
                                                        running_ip6forward,
                                                  ip6forward != running_ip6forward)
+        mpls_enable = ifaceobj.get_attr_value_first('mpls-enable');
+        if mpls_enable:
+            running_mpls_enable = self.read_file_oneline(
+                                    '/proc/sys/net/mpls/conf/%s/input'
+                                    %ifaceobj.name)
+            running_mpls_enable = utils.get_yesno_from_onezero(
+                                            running_mpls_enable)
+            ifaceobjcurr.update_config_with_status('mpls-enable',
+                                                   running_mpls_enable,
+                                            mpls_enable != running_mpls_enable)
         return
 
     def _query_check(self, ifaceobj, ifaceobjcurr, ifaceobj_getfunc=None):
@@ -756,7 +807,7 @@ class address(moduleBase):
            return
         addrs = utils.get_normalized_ip_addr(ifaceobj.name,
                                              self._get_iface_addresses(ifaceobj))
-        runningaddrsdict = self.ipcmd.addr_get(ifaceobj.name)
+        runningaddrsdict = self.ipcmd.get_running_addrs(ifaceobj)
         # if anycast address is configured on 'lo' and is in running config
         # add it to addrs so that query_check doesn't fail
         anycast_addr = utils.get_normalized_ip_addr(ifaceobj.name, ifaceobj.get_attr_value_first('clagd-vxlan-anycast-ip'))
@@ -817,7 +868,7 @@ class address(moduleBase):
             ifaceobjrunning.addr_method = 'loopback'
         else:
             default_addrs = []
-        runningaddrsdict = self.ipcmd.addr_get(ifaceobjrunning.name)
+        runningaddrsdict = self.ipcmd.get_running_addrs(ifaceobjrunning)
         if runningaddrsdict:
             [ifaceobjrunning.update_config('address', addr)
                 for addr, addrattrs in runningaddrsdict.items()

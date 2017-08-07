@@ -6,6 +6,7 @@
 
 try:
     from sets import Set
+    from ipaddr import IPv4Address
 
     from ifupdown.iface import *
     from ifupdown.utils import utils
@@ -122,6 +123,9 @@ class vxlan(moduleBase):
                     if (anycastip and running_localtunnelip and
                                 anycastip == running_localtunnelip):
                         local = running_localtunnelip
+                    if vxlanattrs.get('vxlanid') != vxlanid:
+                        self.log_error('%s: Cannot change running vxlan id: '
+                                       'Operation not supported' % ifaceobj.name, ifaceobj)
 
             netlink.link_add_vxlan(ifaceobj.name, vxlanid,
                                    local=local,
@@ -130,6 +134,13 @@ class vxlan(moduleBase):
                                    group=group)
 
             remoteips = ifaceobj.get_attr_value('vxlan-remoteip')
+            if remoteips:
+                try:
+                    for remoteip in remoteips:
+                        IPv4Address(remoteip)
+                except Exception as e:
+                    self.log_error('%s: vxlan-remoteip: %s' %(ifaceobj.name, str(e)))
+
             if purge_remotes or remoteips:
                 # figure out the diff for remotes and do the bridge fdb updates
                 # only if provisioned by user and not by an vxlan external

@@ -1,4 +1,29 @@
 #!/usr/bin/env python
+#
+# Copyright (C) 2015, 2017 Cumulus Networks, Inc. all rights reserved
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License as
+# published by the Free Software Foundation; version 2.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+# 02110-1301, USA.
+#
+# https://www.gnu.org/licenses/gpl-2.0-standalone.html
+#
+# Authors:
+#       Daniel Walton, dwalton@cumulusnetworks.com
+#       Julien Fortin, julien@cumulusnetworks.com
+#
+# Netlink Manager --
+#
 
 from collections import OrderedDict
 from ipaddr import IPv4Address, IPv6Address
@@ -542,6 +567,81 @@ class NetlinkManager(object):
         msg.build_message(self.sequence.next(), self.pid)
         return self.tx_nlpacket_get_response(msg)
 
+    def link_set_attrs(self, ifname, kind=None, slave_kind=None, ifindex=0, ifla={}, ifla_info_data={}, ifla_info_slave_data={}):
+        debug = RTM_NEWLINK in self.debug
+
+        link = Link(RTM_NEWLINK, debug, use_color=self.use_color)
+        link.flags = NLM_F_REQUEST | NLM_F_ACK
+        link.body = pack('Bxxxiii', socket.AF_UNSPEC, ifindex, 0, 0)
+
+        for nl_attr, value in ifla.items():
+            link.add_attribute(nl_attr, value)
+
+        if ifname:
+            link.add_attribute(Link.IFLA_IFNAME, ifname)
+
+        linkinfo = dict()
+
+        if kind:
+            linkinfo[Link.IFLA_INFO_KIND] = kind
+            linkinfo[Link.IFLA_INFO_DATA] = ifla_info_data
+        elif slave_kind:
+            linkinfo[Link.IFLA_INFO_SLAVE_KIND] = slave_kind,
+            linkinfo[Link.IFLA_INFO_SLAVE_DATA] = ifla_info_slave_data
+
+        link.add_attribute(Link.IFLA_LINKINFO, linkinfo)
+        link.build_message(self.sequence.next(), self.pid)
+        return self.tx_nlpacket_get_response(link)
+
+    def link_add_set(self, kind,
+                     ifname=None,
+                     ifindex=0,
+                     slave_kind=None,
+                     ifla={},
+                     ifla_info_data={},
+                     ifla_info_slave_data={}):
+        """
+        Build and TX a RTM_NEWLINK message to add the desired interface
+        """
+        debug = RTM_NEWLINK in self.debug
+
+        link = Link(RTM_NEWLINK, debug, use_color=self.use_color)
+        link.flags = NLM_F_CREATE | NLM_F_REQUEST | NLM_F_ACK
+        link.body = pack('Bxxxiii', socket.AF_UNSPEC, ifindex, 0, 0)
+
+        for nl_attr, value in ifla.items():
+            link.add_attribute(nl_attr, value)
+
+        if ifname:
+            link.add_attribute(Link.IFLA_IFNAME, ifname)
+
+        linkinfo = dict()
+        if kind:
+            linkinfo[Link.IFLA_INFO_KIND] = kind
+            linkinfo[Link.IFLA_INFO_DATA] = ifla_info_data
+        if slave_kind:
+            linkinfo[Link.IFLA_INFO_SLAVE_KIND] = slave_kind
+            linkinfo[Link.IFLA_INFO_SLAVE_DATA] = ifla_info_slave_data
+        link.add_attribute(Link.IFLA_LINKINFO, linkinfo)
+
+        link.build_message(self.sequence.next(), self.pid)
+        return self.tx_nlpacket_get_response(link)
+
+    def link_del(self, ifindex=None, ifname=None):
+        if not ifindex and not ifname:
+            raise ValueError('invalid ifindex and/or ifname')
+
+        if not ifindex:
+            ifindex = self.get_iface_index(ifname)
+
+        debug = RTM_DELLINK in self.debug
+
+        link = Link(RTM_DELLINK, debug, use_color=self.use_color)
+        link.flags = NLM_F_REQUEST | NLM_F_ACK
+        link.body = pack('Bxxxiii', socket.AF_UNSPEC, ifindex, 0, 0)
+        link.build_message(self.sequence.next(), self.pid)
+        return self.tx_nlpacket_get_response(link)
+
     def _link_add(self, ifindex, ifname, kind, ifla_info_data):
         """
         Build and TX a RTM_NEWLINK message to add the desired interface
@@ -552,13 +652,19 @@ class NetlinkManager(object):
         link.flags = NLM_F_CREATE | NLM_F_REQUEST | NLM_F_ACK
         link.body = pack('Bxxxiii', socket.AF_UNSPEC, 0, 0, 0)
         link.add_attribute(Link.IFLA_IFNAME, ifname)
-        link.add_attribute(Link.IFLA_LINK, ifindex)
+
+        if ifindex:
+            link.add_attribute(Link.IFLA_LINK, ifindex)
+
         link.add_attribute(Link.IFLA_LINKINFO, {
             Link.IFLA_INFO_KIND: kind,
             Link.IFLA_INFO_DATA: ifla_info_data
         })
         link.build_message(self.sequence.next(), self.pid)
         return self.tx_nlpacket_get_response(link)
+
+    def link_add_bridge(self, ifname, ifla_info_data={}):
+        return self._link_add(ifindex=None, ifname=ifname, kind='bridge', ifla_info_data=ifla_info_data)
 
     def link_add_vlan(self, ifindex, ifname, vlanid, vlan_protocol=None):
         """
@@ -595,7 +701,7 @@ class NetlinkManager(object):
         """
         return self._link_add(ifindex, ifname, 'macvlan', {Link.IFLA_MACVLAN_MODE: Link.MACVLAN_MODE_PRIVATE})
 
-    def vlan_get(self, filter_ifindex=(), filter_vlanid=(), compress_vlans=True):
+    def vlan_get(self, filter_ifindex=None, filter_vlanid=None, compress_vlans=True):
         """
         filter_ifindex should be a tuple if interface indexes, this is a whitelist filter
         filter_vlandid should be a tuple if VLAN IDs, this is a whitelist filter

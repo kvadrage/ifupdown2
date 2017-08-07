@@ -40,9 +40,11 @@ class utils():
         "on": True,
         "yes": True,
         "1": True,
+        "fast": True,
         "off": False,
         "no": False,
         "0": False,
+        "slow": False
     }
 
     _binary_bool = {
@@ -65,10 +67,21 @@ class utils():
         '0' : 'off'
     }
 
+    _yesno_onezero = {
+        '1' : 'yes',
+        '0' : 'no'
+    }
+
     @staticmethod
     def get_onff_from_onezero(value):
         if value in utils._onoff_onezero:
             return utils._onoff_onezero[value]
+        return value
+
+    @staticmethod
+    def get_yesno_from_onezero(value):
+        if value in utils._yesno_onezero:
+            return utils._yesno_onezero[value]
         return value
 
     @staticmethod
@@ -79,9 +92,7 @@ class utils():
 
     @staticmethod
     def get_boolean_from_string(value):
-        if value in utils._string_values:
-            return utils._string_values[value]
-        return False
+        return utils._string_values.get(value, False)
 
     @staticmethod
     def get_yesno_boolean(bool):

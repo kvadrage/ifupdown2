@@ -53,7 +53,7 @@ class moduleBase(object):
             We also check if the policy attributes really exist to make sure someone is not
             trying to "inject" new attributes to prevent breakages and security issue
         """
-        attrs = self.get_modinfo().get('attrs', {})
+        attrs = dict(self.get_modinfo().get('attrs', {}))
 
         if not attrs:
             return
@@ -71,18 +71,24 @@ class moduleBase(object):
         policy_modinfo = policymanager.policymanager_api.get_module_globals(self.modulename, '_modinfo')
         if policy_modinfo:
             policy_attrs = policy_modinfo.get('attrs', {})
+            update_attrs = dict()
 
-            for attr in policy_attrs:
-                if attr not in attrs:
-                    self.logger.warning('%s: %s: %s' % (self.modulename, attr, error_msg))
+            for attr_name, attr_description in policy_attrs.items():
+                if attr_name not in attrs:
+                    self.logger.warning('%s: %s: %s' % (self.modulename, attr_name, error_msg))
+                else:
+                    update_attrs[attr_name] = attr_description
 
-            attrs.update(policy_attrs)
+            attrs.update(update_attrs)
+
+        return attrs
 
     def log_warn(self, str, ifaceobj=None):
         """ log a warning if err str is not one of which we should ignore """
         if not self.ignore_error(str) and not ifupdownflags.flags.IGNORE_ERRORS:
             if self.logger.getEffectiveLevel() == logging.DEBUG:
                 traceback.print_stack()
+                traceback.print_exc()
             self.logger.warn(str)
             if ifaceobj:
                 ifaceobj.set_status(ifaceStatus.WARNING)
@@ -93,6 +99,7 @@ class moduleBase(object):
         if not self.ignore_error(str) and not ifupdownflags.flags.IGNORE_ERRORS:
             if self.logger.getEffectiveLevel() == logging.DEBUG:
                 traceback.print_stack()
+                traceback.print_exc()
             if raise_error:
                 if ifaceobj:
                     ifaceobj.set_status(ifaceStatus.ERROR)
@@ -287,11 +294,11 @@ class moduleBase(object):
 
     def sysctl_set(self, variable, value):
         """ set sysctl variable to value passed as argument """
-        utils.exec_command('sysctl %s=%s' % (variable, value))
+        utils.exec_command('/sbin/sysctl %s=%s' % (variable, value))
 
     def sysctl_get(self, variable):
         """ get value of sysctl variable """
-        output = utils.exec_command('sysctl %s' % variable)
+        output = utils.exec_command('/sbin/sysctl %s' % variable)
         split = output.split('=')
         if len(split) > 1:
             return split[1].strip()
