@@ -26,10 +26,8 @@ try:
     import ifupdown.ifupdownflags
 
     import ifupdownaddons.cache
-    import ifupdownaddons.bondutil
-    import ifupdownaddons.iproute2
-    import ifupdownaddons.bridgeutils
     import ifupdownaddons.mstpctlutil
+    import ifupdownaddons.LinkUtils
 
     import ifupdown.statemanager as statemanager
     import ifupdown.ifupdownflags as ifupdownflags
@@ -162,11 +160,8 @@ class ifupdownMain(ifupdownBase):
         ifupdown.policymanager.reset()
         ifupdown.ifupdownflags.reset()
         ifupdown.ifupdownconfig.reset()
-
-        ifupdownaddons.bondutil.bondutil.reset()
-        ifupdownaddons.iproute2.iproute2.reset()
-        ifupdownaddons.bridgeutils.brctl.reset()
         ifupdownaddons.mstpctlutil.mstpctlutil.reset()
+        ifupdownaddons.LinkUtils.LinkUtils.reset()
 
         ifupdownaddons.cache.linkCache.reset()
         ifupdownaddons.cache.MSTPAttrsCache.invalidate()
@@ -278,13 +273,13 @@ class ifupdownMain(ifupdownBase):
         self._cache_no_repeats = {}
 
         if self.flags.STATEMANAGER_ENABLE:
+            self.statemanager = statemanager.statemanager_api
             try:
-                self.statemanager = statemanager.statemanager_api
                 self.statemanager.read_saved_state()
             except Exception, e:
-                # XXX Maybe we should continue by ignoring old state
+                # if read_saved_state fails, state file might be corrupt.
+                # Ignore old state and continue
                 self.logger.warning('error reading state (%s)' %str(e))
-                raise
         else:
             self.flags.STATEMANAGER_UPDATE = False
         self._delay_admin_state = True if self.config.get(
@@ -340,6 +335,7 @@ class ifupdownMain(ifupdownBase):
             '<interface-on-off-list>': self._keyword_interface_on_off_list,
             '<interface-yes-no-0-1-list>': self._keyword_interface_yes_no_0_1_list,
             '<interface-yes-no-auto-list>': self._keyword_interface_yes_no_auto_list,
+            '<interface-l2protocol-tunnel-list>': self._keyword_interface_l2protocol_tunnel_list
         }
 
     def link_master_slave_ignore_error(self, errorstr):
@@ -951,6 +947,30 @@ class ifupdownMain(ifupdownBase):
         """
         return self._keyword_interface_list_with_value(value,
                                                         ['yes', 'no', 'auto'])
+
+    def _keyword_interface_l2protocol_tunnel_list(self, value, validrange=None):
+        """
+            bridge-l2protocol-tunnel swpX=lacp,stp swpY=cdp swpZ=all
+            bridge-l2protocol-tunnel lacp stp,lldp,cdp
+            bridge-l2protocol-tunnel stp lacp cdp
+            bridge-l2protocol-tunnel lldp pvst
+            bridge-l2protocol-tunnel stp
+            bridge-l2protocol-tunnel all
+        """
+        try:
+            if '=' in value:
+                for intf_arg in value.split():
+                    intf_arg_split = intf_arg.split('=')
+                    for arg in re.split(',|\s*', intf_arg_split[1]):
+                        if arg not in ['all', 'stp', 'lldp', 'lacp', 'cdp', 'pvst']:
+                            return False
+            else:
+                for arg in re.split(',|\s*', value):
+                    if arg not in ['all', 'stp', 'lldp', 'lacp', 'cdp', 'pvst']:
+                        return False
+        except:
+            return False
+        return True
 
     def _keyword_interface_yes_no_0_1_list(self, value, validrange=None):
         """

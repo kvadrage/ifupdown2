@@ -7,14 +7,42 @@
 #
 
 try:
+    import sys
     import argparse
     import argcomplete
 
+    from ifupdown.utils import utils
     from ifupdown.exceptions import ArgvParseError
 except ImportError, e:
     raise ImportError('%s - required module not found' % str(e))
 
-IFUPDOWN2_VERSION = '1.1-cl3u10'
+
+class VersionAction(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+
+        try:
+            dpkg = utils.exec_commandl([utils.dpkg_cmd, '-l', 'ifupdown2'])
+
+            if not dpkg:
+                raise Exception('dpkg -l ifupdown2 returns without output')
+
+            dpkg = dpkg.split('\n')
+
+            if not dpkg:
+                raise Exception('dpkg -l ifupdown2 returns without output')
+
+            for line in dpkg:
+                if 'ifupdown2' in line:
+                    info = line.split()
+
+                    sys.stdout.write('ifupdown2:%s\n' % (info[2]))
+                    sys.exit(0)
+
+            raise Exception('ifupdown2 package not found using dpkg -l')
+
+        except Exception as e:
+            sys.stderr.write('error: cannot get current version using dpkg: %s\n' % str(e))
+            sys.exit(1)
 
 
 class Parse:
@@ -167,7 +195,9 @@ class Parse:
         group = argparser.add_mutually_exclusive_group(required=True)
         group.add_argument('-a', '--all', action='store_true', help='process all interfaces marked "auto"')
         group.add_argument('-c', '--currently-up', dest='currentlyup', action='store_true',
-                           help='only reload auto and other interfaces that are currently up')
+                           help='Reload the configuration for all interfaces which are '
+                                'currently up regardless of whether an interface has '
+                                '"auto <interface>" configuration within the /etc/network/interfaces file.')
         group.add_argument('--allow', dest='CLASS', help='ignore non-"allow-CLASS" interfaces')
         argparser.add_argument('iflist', metavar='IFACE', nargs='*', help=argparse.SUPPRESS)
         argparser.add_argument('-n', '--no-act', dest='noact', action='store_true',
@@ -197,7 +227,4 @@ class Parse:
     def update_common_argparser(self, argparser):
         ''' general parsing rules '''
 
-        argparser.add_argument('-V', '--version',
-                               action='version',
-                               version='ifupdown2:%(prog)s ' + IFUPDOWN2_VERSION,
-                               help='display current ifupdown2 version')
+        argparser.add_argument('-V', '--version', action=VersionAction, nargs=0)

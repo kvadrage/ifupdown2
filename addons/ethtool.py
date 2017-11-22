@@ -15,7 +15,7 @@ try:
     from ifupdown.exceptions import moduleNotSupported
 
     from ifupdownaddons.utilsbase import *
-    from ifupdownaddons.iproute2 import iproute2
+    from ifupdownaddons.LinkUtils import LinkUtils
     from ifupdownaddons.modulebase import moduleBase
 except ImportError, e:
     raise ImportError('%s - required module not found' % str(e))
@@ -55,8 +55,8 @@ class ethtool(moduleBase,utilsBase):
 
     def __init__(self, *args, **kargs):
         moduleBase.__init__(self, *args, **kargs)
-        if not os.path.exists('/sbin/ethtool'):
-            raise moduleNotSupported('module init failed: no /sbin/ethtool found')
+        if not os.path.exists(utils.ethtool_cmd):
+            raise moduleNotSupported('module init failed: %s: not found' % utils.ethtool_cmd)
         self.ipcmd = None
         # keep a list of iface objects who have modified link attributes
         self.ifaceobjs_modified_configs = []
@@ -377,7 +377,7 @@ class ethtool(moduleBase,utilsBase):
 
     def _init_command_handlers(self):
         if not self.ipcmd:
-            self.ipcmd = iproute2()
+            self.ipcmd = LinkUtils()
 
     def run(self, ifaceobj, operation, query_ifaceobj=None, **extra_args):
         """ run ethtool configuration on the interface object passed as

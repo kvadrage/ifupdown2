@@ -7,14 +7,14 @@
 try:
     import os
 
-    from ipaddr import IPNetwork, IPv4Network, IPv6Network
+    from ipaddr import IPNetwork, IPv4Network, IPv6Network, _BaseV4, _BaseV6
     from sets import Set
 
     from ifupdown.iface import *
     from ifupdown.utils import utils
     from ifupdown.netlink import netlink
 
-    from ifupdownaddons.iproute2 import iproute2
+    from ifupdownaddons.LinkUtils import LinkUtils
     from ifupdownaddons.dhclient import dhclient
     from ifupdownaddons.modulebase import moduleBase
 
@@ -111,6 +111,7 @@ class address(moduleBase):
         self.max_mtu = policymanager.policymanager_api.get_module_globals(module_name=self.__class__.__name__, attr='max_mtu')
         self.ipforward = policymanager.policymanager_api.get_attr_default(module_name=self.__class__.__name__, attr='ip-forward')
         self.ip6forward = policymanager.policymanager_api.get_attr_default(module_name=self.__class__.__name__, attr='ip6-forward')
+        self.ifaces_defaults = policymanager.policymanager_api.get_iface_defaults(module_name=self.__class__.__name__)
 
         if not self.default_mtu:
             self.default_mtu = '1500'
@@ -188,10 +189,7 @@ class address(moduleBase):
         return False
 
     def _get_hwaddress(self, ifaceobj):
-        hwaddress = ifaceobj.get_attr_value_first('hwaddress')
-        if hwaddress and hwaddress.startswith("ether"):
-            hwaddress = hwaddress[5:].strip()
-        return hwaddress
+        return utils.strip_hwaddress(ifaceobj.get_attr_value_first('hwaddress'))
 
     def _process_bridge(self, ifaceobj, up):
         hwaddress = self._get_hwaddress(ifaceobj)
@@ -305,8 +303,12 @@ class address(moduleBase):
         else:
             ifaceobjlist = [ifaceobj]
 
+        module_name = self.__class__.__name__
+        ifname = ifaceobj.name
+
         (addr_supported, newaddrs, newaddr_attrs) = self._inet_address_convert_to_cidr(ifaceobjlist)
-        newaddrs = utils.get_normalized_ip_addr(ifaceobj.name, newaddrs)
+        newaddrs = utils.get_ip_objs(module_name, ifname, newaddrs)
+
         if not addr_supported:
             return
         if (not squash_addr_config and (ifaceobj.flags & iface.HAS_SIBLINGS)):
@@ -328,7 +330,10 @@ class address(moduleBase):
 
             if runningaddrs and anycast_addr and anycast_addr in runningaddrs:
                 newaddrs.append(anycast_addr)
-            if newaddrs == runningaddrs:
+
+            user_ip4, user_ip6, newaddrs = self.order_user_configured_addrs(newaddrs)
+
+            if newaddrs == runningaddrs or self.compare_running_ips_and_user_config(user_ip4, user_ip6, runningaddrs):
                 if force_reapply:
                     self._inet_address_list_config(ifaceobj, newaddrs, newaddr_attrs)
                 return
@@ -348,6 +353,63 @@ class address(moduleBase):
         if not newaddrs:
             return
         self._inet_address_list_config(ifaceobj, newaddrs, newaddr_attrs)
+
+    def compare_running_ips_and_user_config(self, user_ip4, user_ip6, running_addrs):
+        """
+            We need to compare the user config ips and the running ips.
+            ip4 ordering matters (primary etc) but ip6 order doesn't matter
+
+            this function replaces the strict comparison previously in place
+                if newaddrs == running_addrs ?
+
+            We will compare if the ip4 ordering is correct, then check if all
+            ip6 are present in the list (without checking the ordering)
+        """
+        if (user_ip4 or user_ip6) and not running_addrs:
+            return False
+        elif running_addrs and not user_ip4 and not user_ip6:
+            return False
+        elif not running_addrs and not user_ip4 and not user_ip6:
+            return True
+
+        len_ip4 = len(user_ip4)
+        len_running_addrs = len(running_addrs)
+
+        if len_ip4 > len_running_addrs:
+            return False
+
+        i = 0
+        while i < len_ip4:
+            if user_ip4[i] != running_addrs[i]:
+                return False
+            i += 1
+
+        if len_ip4 > 0:
+            running_ip6 = running_addrs[len_ip4:]
+        else:
+            running_ip6 = running_addrs
+
+        i = 0
+        len_ip6 = len(user_ip6)
+
+        for ip6 in running_ip6:
+            if ip6 not in user_ip6:
+                return False
+            i += 1
+
+        return i == len_ip6
+
+    def order_user_configured_addrs(self, user_config_addrs):
+        ip4 = []
+        ip6 = []
+
+        for a in user_config_addrs:
+            if isinstance(a, _BaseV6):
+                ip6.append(str(a))
+            else:
+                ip4.append(str(a))
+
+        return ip4, ip6, ip4 + ip6
 
     def _add_delete_gateway(self, ifaceobj, gateways=[], prev_gw=[]):
         vrf = ifaceobj.get_attr_value_first('vrf')
@@ -437,8 +499,7 @@ class address(moduleBase):
                 if not running_mtu or (running_mtu != mtu):
                     self.ipcmd.link_set(u, 'mtu', mtu)
 
-    def _process_mtu_config(self, ifaceobj, ifaceobj_getfunc):
-        mtu = ifaceobj.get_attr_value_first('mtu')
+    def _process_mtu_config(self, ifaceobj, ifaceobj_getfunc, mtu):
         if mtu:
             if not self._check_mtu_config(ifaceobj, mtu, ifaceobj_getfunc):
                 return
@@ -595,6 +656,22 @@ class address(moduleBase):
                     ifaceobj.status = ifaceStatus.ERROR
                     self.logger.error('%s: %s' %(ifaceobj.name, str(e)))
 
+    def process_mtu(self, ifaceobj, ifaceobj_getfunc):
+        mtu = ifaceobj.get_attr_value_first('mtu')
+
+        if not mtu:
+            default_iface_mtu = self.ifaces_defaults.get(ifaceobj.name, {}).get('mtu')
+
+            if default_iface_mtu:
+                try:
+                    mtu = default_iface_mtu
+                    int(default_iface_mtu)
+                except Exception as e:
+                    self.logger.warning('%s: MTU value from policy file: %s' % (ifaceobj.name, str(e)))
+                    return
+
+        self._process_mtu_config(ifaceobj, ifaceobj_getfunc, mtu)
+
     def _up(self, ifaceobj, ifaceobj_getfunc=None):
         if not self.ipcmd.link_exists(ifaceobj.name):
             return
@@ -632,7 +709,8 @@ class address(moduleBase):
         if addr_method != "dhcp":
             self._inet_address_config(ifaceobj, ifaceobj_getfunc,
                                       force_reapply)
-        self._process_mtu_config(ifaceobj, ifaceobj_getfunc)
+
+        self.process_mtu(ifaceobj, ifaceobj_getfunc)
 
         try:
             self.ipcmd.batch_commit()
@@ -909,7 +987,7 @@ class address(moduleBase):
 
     def _init_command_handlers(self):
         if not self.ipcmd:
-            self.ipcmd = iproute2()
+            self.ipcmd = LinkUtils()
 
     def run(self, ifaceobj, operation, query_ifaceobj=None, ifaceobj_getfunc=None):
         """ run address configuration on the interface object passed as argument

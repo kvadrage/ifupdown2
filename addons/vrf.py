@@ -21,8 +21,7 @@ try:
     import ifupdown.ifupdownflags as ifupdownflags
 
     from ifupdownaddons.utilsbase import *
-    from ifupdownaddons.bondutil import bondutil
-    from ifupdownaddons.iproute2 import iproute2
+    from ifupdownaddons.LinkUtils import LinkUtils
     from ifupdownaddons.dhclient import dhclient
     from ifupdownaddons.modulebase import moduleBase
 except ImportError, e:
@@ -843,7 +842,7 @@ class vrf(moduleBase):
                     # This is a vrf slave
                     self._up_vrf_slave(ifaceobj.name, vrf, ifaceobj,
                                        ifaceobj_getfunc)
-                else:
+                elif not ifupdownflags.flags.PERFMODE:
                     # check if we were a slave before
                     master = self.ipcmd.link_get_master(ifaceobj.name)
                     if master:
@@ -1065,9 +1064,7 @@ class vrf(moduleBase):
 
     def _init_command_handlers(self):
         if not self.ipcmd:
-            self.ipcmd = iproute2()
-        if not self.bondcmd:
-            self.bondcmd = bondutil()
+            self.ipcmd = self.bondcmd = LinkUtils()
         if not self.dhclientcmd:
             self.dhclientcmd = dhclient()
 

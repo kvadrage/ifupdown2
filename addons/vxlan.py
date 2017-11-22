@@ -15,7 +15,7 @@ try:
     import ifupdown.policymanager as policymanager
 
     from ifupdownaddons.cache import *
-    from ifupdownaddons.iproute2 import iproute2
+    from ifupdownaddons.LinkUtils import LinkUtils
     from ifupdownaddons.modulebase import moduleBase
     from ifupdownaddons.systemutils import systemUtils
 
@@ -119,7 +119,7 @@ class vxlan(moduleBase):
             ((ifname, 'linkinfo', Link.IFLA_VXLAN_LEARNING), learning),
             ((ifname, 'linkinfo', 'svcnode'), group)
         ):
-            if not self.ipcmd.cache_check(attr_list, value):
+            if value and not self.ipcmd.cache_check(attr_list, value):
                 return True
         return False
 
@@ -161,12 +161,49 @@ class vxlan(moduleBase):
                 vxlanid = int(vxlanid)
             except:
                 self.log_error('%s: invalid vxlan-id \'%s\'' % (ifname, vxlanid), ifaceobj)
+
+            if not group:
+                group = policymanager.policymanager_api.get_module_globals(
+                    module_name=self.__class__.__name__,
+                    attr='vxlan-svcnodeip'
+                )
+
+            if not local:
+                local = policymanager.policymanager_api.get_module_globals(
+                    module_name=self.__class__.__name__,
+                    attr='vxlan-local-tunnelip'
+                )
+
+            if not ageing:
+                ageing = policymanager.policymanager_api.get_module_globals(
+                    module_name=self.__class__.__name__,
+                    attr='vxlan-ageing'
+                )
+
+                if not ageing and link_exists:
+                    # if link doesn't exist we let the kernel define ageing
+                    ageing = self.get_attr_default_value('vxlan-ageing')
+
             if self.should_create_set_vxlan(link_exists, ifname, vxlanid, local, learning, ageing, group):
-                netlink.link_add_vxlan(ifname, vxlanid,
-                                       local=local,
-                                       learning=learning,
-                                       ageing=ageing,
-                                       group=group)
+                try:
+                    netlink.link_add_vxlan(ifname, vxlanid,
+                                           local=local,
+                                           learning=learning,
+                                           ageing=ageing,
+                                           group=group)
+                except Exception as e_netlink:
+                    self.logger.debug('%s: vxlan netlink: %s' % (ifname, str(e_netlink)))
+                    try:
+                        self.ipcmd.link_create_vxlan(ifname, vxlanid,
+                                                     localtunnelip=local,
+                                                     svcnodeip=group,
+                                                     remoteips=ifaceobj.get_attr_value('vxlan-remoteip'),
+                                                     learning='on' if learning else 'off',
+                                                     ageing=anycastip)
+                    except Exception as e_iproute2:
+                        self.logger.warning('%s: vxlan add/set failed: %s' % (ifname, str(e_iproute2)))
+                        return
+
                 try:
                     # manually adding an entry to the caching after creating/updating the vxlan
                     if not ifname in linkCache.links:
@@ -354,7 +391,7 @@ class vxlan(moduleBase):
 
     def _init_command_handlers(self):
         if not self.ipcmd:
-            self.ipcmd = iproute2()
+            self.ipcmd = LinkUtils()
 
     def run(self, ifaceobj, operation, query_ifaceobj=None, **extra_args):
         op_handler = self._run_ops.get(operation)

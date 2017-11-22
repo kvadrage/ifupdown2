@@ -82,21 +82,39 @@ class utils():
     directories, command execution will fail because we have
     set default path same as debian path.
     """
-    for cmd, default_path in {'bridge' : '/sbin/bridge',
-                             'ip' : '/bin/ip',
-                             'brctl' : '/sbin/brctl',
-                             'pidof' : '/bin/pidof',
-                             'service' : '/usr/sbin/service',
-                             'sysctl' : '/sbin/sysctl',
-                             'modprobe' : '/sbin/modprobe',
-                             'pstree' : '/usr/bin/pstree',
-                             'ss' : '/bin/ss',
-                             'vrrpd' : '/usr/sbin/vrrpd',
-                             'ifplugd' : '/usr/sbin/ifplugd',
-                             'mstpctl' : '/sbin/mstpctl',
-                             'ethtool' : '/sbin/ethtool'}.iteritems():
-        vars()[cmd + '_cmd'] = default_path
-        if os.path.exists(default_path):
+    bridge_cmd      = '/sbin/bridge'
+    ip_cmd          = '/bin/ip'
+    brctl_cmd       = '/sbin/brctl'
+    pidof_cmd       = '/bin/pidof'
+    service_cmd     = '/usr/sbin/service'
+    sysctl_cmd      = '/sbin/sysctl'
+    modprobe_cmd    = '/sbin/modprobe'
+    pstree_cmd      = '/usr/bin/pstree'
+    ss_cmd          = '/bin/ss'
+    vrrpd_cmd       = '/usr/sbin/vrrpd'
+    ifplugd_cmd     = '/usr/sbin/ifplugd'
+    mstpctl_cmd     = '/sbin/mstpctl'
+    ethtool_cmd     = '/sbin/ethtool'
+    systemctl_cmd   = '/bin/systemctl'
+    dpkg_cmd        = '/usr/bin/dpkg'
+
+    for cmd in ['bridge',
+                'ip',
+                'brctl',
+                'pidof',
+                'service',
+                'sysctl',
+                'modprobe',
+                'pstree',
+                'ss',
+                'vrrpd',
+                'ifplugd',
+                'mstpctl',
+                'ethtool',
+                'systemctl',
+                'dpkg'
+                ]:
+        if os.path.exists(vars()[cmd + '_cmd']):
             continue
         for path in ['/bin/',
                      '/sbin/',
@@ -104,6 +122,8 @@ class utils():
                      '/usr/sbin/',]:
             if os.path.exists(path + cmd):
                 vars()[cmd + '_cmd'] = path + cmd
+            else:
+                logger.debug('warning: path %s not found: %s won\'t be usable' % (path + cmd, cmd))
 
     @staticmethod
     def get_onff_from_onezero(value):
@@ -159,6 +179,12 @@ class utils():
             return int(value)
         except:
             return int(utils.get_boolean_from_string(value))
+
+    @staticmethod
+    def strip_hwaddress(hwaddress):
+        if hwaddress and hwaddress.startswith("ether"):
+            hwaddress = hwaddress[5:].strip()
+        return hwaddress
 
     @classmethod
     def importName(cls, modulename, name):
@@ -278,6 +304,25 @@ class utils():
             except Exception as e:
                 cls.logger.warning('%s: %s' % (ifacename, e))
             return ipaddrs
+
+    @classmethod
+    def get_ip_objs(cls, module_name, ifname, addrs_list):
+        addrs_obj_list = []
+        for a in addrs_list or []:
+            try:
+                addrs_obj_list.append(IPNetwork(a) if '/' in a else IPAddress(a))
+            except Exception as e:
+                cls.logger.warning('%s: %s: %s' % (module_name, ifname, str(e)))
+        return addrs_obj_list
+
+    @classmethod
+    def get_ip_obj(cls, module_name, ifname, addr):
+        if addr:
+            try:
+                return IPNetwork(addr) if '/' in addr else IPAddress(addr)
+            except Exception as e:
+                cls.logger.warning('%s: %s: %s' % (module_name, ifname, str(e)))
+        return None
 
     @classmethod
     def is_addr_ip_allowed_on(cls, ifaceobj, syntax_check=False):
