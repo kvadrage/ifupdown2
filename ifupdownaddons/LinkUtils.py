@@ -118,15 +118,20 @@ class LinkUtils(utilsBase):
         else:
             self._link_fill_iproute2_cmd(ifacename, refresh)
 
-        self._fill_bond_info()
-        self._fill_bridge_info()
+        self._fill_bond_info(ifacename)
+        self._fill_bridge_info(ifacename)
 
-    def _fill_bridge_info(self):
+    def _fill_bridge_info(self, ifacename):
 
         if True:  # netlink
             brports = {}
 
-            for ifname, obj in linkCache.links.items():
+            if ifacename:
+                cache_dict = {ifacename: linkCache.links.get(ifacename, {})}
+            else:
+                cache_dict = linkCache.links
+
+            for ifname, obj in cache_dict.items():
                 slave_kind = obj.get('slave_kind')
                 if not slave_kind and slave_kind != 'bridge':
                     continue
@@ -332,11 +337,21 @@ class LinkUtils(utilsBase):
                 mcattrs[m] = n
         return mcattrs
 
-    def _fill_bond_info(self):
+    def _fill_bond_info(self, ifacename):
         bonding_masters = self.read_file_oneline('/sys/class/net/bonding_masters')
         if not bonding_masters:
             return
-        for bondname in bonding_masters.split():
+
+        bond_masters_list = bonding_masters.split()
+
+        if ifacename:
+            if ifacename in bond_masters_list:
+                bond_masters_list = [ifacename]
+            else:
+                # we want to refresh this interface only if it's a bond master
+                return
+
+        for bondname in bond_masters_list:
             try:
                 if bondname not in linkCache.links:
                     linkCache.set_attr([bondname], {'linkinfo': {}})
@@ -346,7 +361,7 @@ class LinkUtils(utilsBase):
                 try:
                     # if some attribute are missing we try to get the bond attributes via sysfs
                     bond_linkinfo = linkCache.links[bondname]['linkinfo']
-                    for attr in ['mode', 'xmit_hash_policy', 'min_links']:
+                    for attr in [Link.IFLA_BOND_MODE, Link.IFLA_BOND_XMIT_HASH_POLICY, Link.IFLA_BOND_MIN_LINKS]:
                         if attr not in bond_linkinfo:
                             self._fill_bond_info_sysfs(bondname)
                             # after we fill in the cache we can continue to the next bond
@@ -359,7 +374,7 @@ class LinkUtils(utilsBase):
 
     def _fill_bond_info_sysfs(self, bondname):
         try:
-            linkCache.set_attr([bondname, 'linkinfo', 'min_links'],
+            linkCache.set_attr([bondname, 'linkinfo', Link.IFLA_BOND_MIN_LINKS],
                                self.read_file_oneline(
                                    '/sys/class/net/%s/bonding/min_links'
                                    % bondname))
@@ -367,62 +382,79 @@ class LinkUtils(utilsBase):
             self.logger.debug(str(e))
 
         try:
-            linkCache.set_attr([bondname, 'linkinfo', 'mode'],
+            linkCache.set_attr([bondname, 'linkinfo', Link.IFLA_BOND_MODE],
                                self.read_file_oneline('/sys/class/net/%s/bonding/mode'
                                                       % bondname).split()[0])
         except Exception as e:
             self.logger.debug(str(e))
         try:
-            linkCache.set_attr([bondname, 'linkinfo', 'xmit_hash_policy'],
+            linkCache.set_attr([bondname, 'linkinfo', Link.IFLA_BOND_XMIT_HASH_POLICY],
                                self.read_file_oneline(
                                    '/sys/class/net/%s/bonding/xmit_hash_policy'
                                    % bondname).split()[0])
         except Exception as e:
             self.logger.debug(str(e))
         try:
-            linkCache.set_attr([bondname, 'linkinfo', 'lacp_rate'],
+            linkCache.set_attr([bondname, 'linkinfo', Link.IFLA_BOND_AD_LACP_RATE],
                                self.read_file_oneline('/sys/class/net/%s/bonding/lacp_rate'
                                                       % bondname).split()[1])
         except Exception as e:
             self.logger.debug(str(e))
         try:
-            linkCache.set_attr([bondname, 'linkinfo', 'ad_actor_sys_prio'],
+            linkCache.set_attr([bondname, 'linkinfo', Link.IFLA_BOND_AD_ACTOR_SYS_PRIO],
                                self.read_file_oneline('/sys/class/net/%s/bonding/ad_actor_sys_prio'
                                                       % bondname))
         except Exception as e:
             self.logger.debug(str(e))
         try:
-            linkCache.set_attr([bondname, 'linkinfo', 'ad_actor_system'],
+            linkCache.set_attr([bondname, 'linkinfo', Link.IFLA_BOND_AD_ACTOR_SYSTEM],
                                self.read_file_oneline('/sys/class/net/%s/bonding/ad_actor_system'
                                                       % bondname))
         except Exception as e:
             self.logger.debug(str(e))
         try:
-            linkCache.set_attr([bondname, 'linkinfo', 'lacp_bypass'],
+            linkCache.set_attr([bondname, 'linkinfo', Link.IFLA_BOND_AD_LACP_BYPASS],
                                self.read_file_oneline('/sys/class/net/%s/bonding/lacp_bypass'
                                                       % bondname).split()[1])
         except Exception as e:
             self.logger.debug(str(e))
         try:
-            linkCache.set_attr([bondname, 'linkinfo', 'updelay'],
+            linkCache.set_attr([bondname, 'linkinfo', Link.IFLA_BOND_UPDELAY],
                                self.read_file_oneline('/sys/class/net/%s/bonding/updelay'
                                                       % bondname))
         except Exception as e:
             self.logger.debug(str(e))
         try:
-            linkCache.set_attr([bondname, 'linkinfo', 'downdelay'],
+            linkCache.set_attr([bondname, 'linkinfo', Link.IFLA_BOND_DOWNDELAY],
                                self.read_file_oneline('/sys/class/net/%s/bonding/downdelay'
                                                       % bondname))
         except Exception as e:
             self.logger.debug(str(e))
+
         try:
-            map(lambda x: linkCache.set_attr([bondname, 'linkinfo', x],
-                                             self.read_file_oneline('/sys/class/net/%s/bonding/%s'
-                                                                    % (bondname, x))),
-                ['use_carrier', 'miimon', 'min_links', 'num_unsol_na',
-                 'num_grat_arp'])
+            linkCache.set_attr([bondname, 'linkinfo', Link.IFLA_BOND_USE_CARRIER],
+                               self.read_file_oneline('/sys/class/net/%s/bonding/use_carrier' % bondname))
         except Exception as e:
             self.logger.debug(str(e))
+
+        try:
+            linkCache.set_attr([bondname, 'linkinfo', Link.IFLA_BOND_MIIMON],
+                               self.read_file_oneline('/sys/class/net/%s/bonding/miimon' % bondname))
+        except Exception as e:
+            self.logger.debug(str(e))
+
+        try:
+            linkCache.set_attr([bondname, 'linkinfo', Link.IFLA_BOND_NUM_PEER_NOTIF],
+                               self.read_file_oneline('/sys/class/net/%s/bonding/num_unsol_na' % bondname))
+        except Exception as e:
+            self.logger.debug(str(e))
+
+        try:
+            linkCache.set_attr([bondname, 'linkinfo', Link.IFLA_BOND_NUM_PEER_NOTIF],
+                               self.read_file_oneline('/sys/class/net/%s/bonding/num_grat_arp' % bondname))
+        except Exception as e:
+            self.logger.debug(str(e))
+
 
     def _link_fill_iproute2_cmd(self, ifacename=None, refresh=False):
         warn = True
