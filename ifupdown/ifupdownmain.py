@@ -88,6 +88,7 @@ class ifupdownMain(ifupdownBase):
             return
         if ((ifaceobj.link_kind & ifaceLinkKind.VRF) or
             (ifaceobj.link_privflags & ifaceLinkPrivFlags.VRF_SLAVE)):
+            self._keep_link_down(ifaceobj)
             return
         # if not a logical interface and addr method is manual,
         # ignore link admin state changes
@@ -104,14 +105,19 @@ class ifupdownMain(ifupdownBase):
         if ifaceobj.link_type == ifaceLinkType.LINK_SLAVE:
             return
         if not self.link_exists(ifaceobj.name):
-           return
+            return
+        if self._keep_link_down(ifaceobj):
+            return
+        self.link_up(ifaceobj.name)
+
+    def _keep_link_down(self, ifaceobj):
         if ifaceobj.link_privflags & ifaceLinkPrivFlags.KEEP_LINK_DOWN:
             # user has asked to explicitly keep the link down,
             # so, force link down
             self.logger.info('%s: keeping link down due to user config' %ifaceobj.name)
             self.link_down(ifaceobj.name)
-            return
-        self.link_up(ifaceobj.name)
+            return True
+        return False
 
     def run_down(self, ifaceobj):
         if ((ifaceobj.link_kind & ifaceLinkKind.VRF) or
@@ -329,11 +335,13 @@ class ifupdownMain(ifupdownBase):
             '<number-range-list>': self._keyword_number_range_list,
             '<number-comma-range-list>': self._keyword_number_comma_range_list,
             '<interface-range-list>': self._keyword_interface_range_list,
+            '<interface-range-list-multiple-of-16>': self._keyword_interface_range_list_multiple_of_16,
             '<mac-ip/prefixlen-list>': self._keyword_mac_ip_prefixlen_list,
             '<number-interface-list>': self._keyword_number_interface_list,
             '<interface-yes-no-list>': self._keyword_interface_yes_no_list,
             '<interface-on-off-list>': self._keyword_interface_on_off_list,
             '<interface-yes-no-0-1-list>': self._keyword_interface_yes_no_0_1_list,
+            '<interface-disabled-automatic-enabled>': self._keyword_interface_disabled_automatic_enabled_list,
             '<interface-yes-no-auto-list>': self._keyword_interface_yes_no_auto_list,
             '<interface-l2protocol-tunnel-list>': self._keyword_interface_l2protocol_tunnel_list
         }
@@ -981,7 +989,16 @@ class ifupdownMain(ifupdownBase):
         return self._keyword_interface_list_with_value(value,
                                                        ['yes', 'no', '1', '0', '2'])
 
-    def _keyword_interface_range_list(self, value, validrange):
+    def _keyword_interface_disabled_automatic_enabled_list(self, value, validrange=None):
+        return self._keyword_interface_list_with_value(value, [
+            '0', 'disabled', 'no',
+            '1', 'automatic', 'yes',
+            '2', 'enabled'])
+
+    def _keyword_interface_range_list_multiple_of_16(self, value, validrange):
+        return self._keyword_interface_range_list(value, validrange, multiple=16)
+
+    def _keyword_interface_range_list(self, value, validrange, multiple=None):
         """
             <number> | ( <interface>=<number> [ <interface>=number> ...] )
             ex: mstpctl-portpathcost swp1=0 swp2=1
@@ -997,6 +1014,11 @@ class ifupdownMain(ifupdownBase):
                                                 ' valid attribute range: %s'
                                                 % (values[0],
                                                    '-'.join(validrange)))
+
+                    if multiple is not None:
+                        if not (n % multiple == 0):
+                            raise invalidValueError('invalid value %s: must be a multiple of %s' % (n, multiple))
+
                     return True
                 except invalidValueError as e:
                     raise e
@@ -1018,6 +1040,11 @@ class ifupdownMain(ifupdownBase):
                         % (iface_value[1],
                            iface_value[0],
                            '-'.join(validrange)))
+
+                if multiple is not None:
+                    if not (number % multiple == 0):
+                        raise invalidValueError('invalid value %s: must be a multiple of %s' % (number, multiple))
+
             return True
         except invalidValueError as e:
             raise e
@@ -1123,6 +1150,8 @@ class ifupdownMain(ifupdownBase):
                     'message': 'invalid value "%s": valid attribute values: %s'
                                % (value, validvals)
                 }
+        elif validvals and value in validvals:
+            pass
         elif validrange:
             if len(validrange) != 2:
                 raise Exception('%s: invalid range in addon configuration'
@@ -1484,7 +1513,7 @@ class ifupdownMain(ifupdownBase):
             ret = False
             for i in ifaceobjs:
                 if i.classes:
-                    common = Set([allow_classes]).intersection(
+                    common = Set(allow_classes).intersection(
                                 Set(i.classes))
                     if common:
                         ret = True
@@ -1608,16 +1637,22 @@ class ifupdownMain(ifupdownBase):
         except Exception:
             raise
 
+        filtered_ifacenames = None
         if ifacenames:
             ifacenames = self._preprocess_ifacenames(ifacenames)
+
+            if allow_classes:
+                filtered_ifacenames = self._get_filtered_ifacenames_with_classes(auto, allow_classes, excludepats, ifacenames)
 
         # if iface list not given by user, assume all from config file
         if not ifacenames: ifacenames = self.ifaceobjdict.keys()
 
-        # filter interfaces based on auto and allow classes
-        filtered_ifacenames = [i for i in ifacenames
-                               if self._iface_whitelisted(auto, allow_classes,
+        if not filtered_ifacenames:
+            # filter interfaces based on auto and allow classes
+            filtered_ifacenames = [i for i in ifacenames
+                                    if self._iface_whitelisted(auto, allow_classes,
                                                 excludepats, i)]
+
         if not filtered_ifacenames:
             raise Exception('no ifaces found matching given allow lists')
 
@@ -1655,6 +1690,21 @@ class ifupdownMain(ifupdownBase):
         if not iface_read_ret or not ret:
             raise Exception()
 
+    def _get_filtered_ifacenames_with_classes(self, auto, allow_classes, excludepats, ifacenames):
+        # if user has specified ifacelist and allow_classes
+        # append the allow_classes interfaces to user
+        # ifacelist
+        filtered_ifacenames = [i for i in self.ifaceobjdict.keys()
+                               if self._iface_whitelisted(auto, allow_classes,
+                                                          excludepats, i)]
+        filtered_ifacenames += ifacenames
+
+        for intf in ifacenames:
+            for obj in self.get_ifaceobjs(intf) or []:
+                obj.blacklisted = False
+
+        return filtered_ifacenames
+
     def down(self, ops, auto=False, allow_classes=None, ifacenames=None,
              excludepats=None, printdependency=None, usecurrentconfig=False,
              type=None):
@@ -1683,22 +1733,30 @@ class ifupdownMain(ifupdownBase):
                 self.read_iface_config()
             except Exception, e:
                 raise Exception('error reading iface config (%s)' %str(e))
+        filtered_ifacenames = None
         if ifacenames:
             # If iface list is given by the caller, always check if iface
             # is present
             try:
                ifacenames = self._preprocess_ifacenames(ifacenames)
+
+               if allow_classes:
+                   filtered_ifacenames = self._get_filtered_ifacenames_with_classes(auto, allow_classes, excludepats, ifacenames)
+
             except Exception, e:
                raise Exception('%s' %str(e) +
                        ' (interface was probably never up ?)')
 
+
         # if iface list not given by user, assume all from config file
         if not ifacenames: ifacenames = self.ifaceobjdict.keys()
 
-        # filter interfaces based on auto and allow classes
-        filtered_ifacenames = [i for i in ifacenames
-                               if self._iface_whitelisted(auto, allow_classes,
-                                                excludepats, i)]
+        if not filtered_ifacenames:
+            # filter interfaces based on auto and allow classes
+            filtered_ifacenames = [i for i in ifacenames
+                                   if self._iface_whitelisted(auto, allow_classes,
+                                                    excludepats, i)]
+
         if not filtered_ifacenames:
             raise Exception('no ifaces found matching given allow lists ' +
                     '(or interfaces were probably never up ?)')
@@ -1756,8 +1814,11 @@ class ifupdownMain(ifupdownBase):
                 raise
 
         if ifacenames and ops[0] != 'query-running':
-           # If iface list is given, always check if iface is present
-           ifacenames = self._preprocess_ifacenames(ifacenames)
+            # If iface list is given, always check if iface is present
+            ifacenames = self._preprocess_ifacenames(ifacenames)
+
+        if allow_classes:
+            filtered_ifacenames = self._get_filtered_ifacenames_with_classes(auto, allow_classes, excludepats, ifacenames)
 
         # if iface list not given by user, assume all from config file
         if not ifacenames: ifacenames = self.ifaceobjdict.keys()
@@ -1765,10 +1826,16 @@ class ifupdownMain(ifupdownBase):
         # filter interfaces based on auto and allow classes
         if ops[0] == 'query-running':
             filtered_ifacenames = ifacenames
-        else:
-            filtered_ifacenames = [i for i in ifacenames
-                if self._iface_whitelisted(auto, allow_classes,
-                        excludepats, i)]
+        elif not allow_classes:
+            filtered_ifacenames = [
+                i for i in ifacenames
+                if self._iface_whitelisted(
+                    auto,
+                    allow_classes,
+                    excludepats, i
+                )
+            ]
+
         if not filtered_ifacenames:
                 raise Exception('no ifaces found matching ' +
                         'given allow lists')
@@ -2156,11 +2223,9 @@ class ifupdownMain(ifupdownBase):
 
         for i in ifacenames:
             for ifaceobj in self.get_ifaceobjs(i):
-                if (self.is_ifaceobj_builtin(ifaceobj) or
-                    not ifaceobj.is_config_present()):
+                if self.is_ifaceobj_builtin(ifaceobj):
                     continue
                 ifaceobj.dump_raw(self.logger)
-                print '\n'
                 if (ifupdownflags.flags.WITH_DEPENDS and
                     not ifupdownflags.flags.ALL):
                     dlist = ifaceobj.lowerifaces

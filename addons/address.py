@@ -112,6 +112,12 @@ class address(moduleBase):
         self.ipforward = policymanager.policymanager_api.get_attr_default(module_name=self.__class__.__name__, attr='ip-forward')
         self.ip6forward = policymanager.policymanager_api.get_attr_default(module_name=self.__class__.__name__, attr='ip6-forward')
         self.ifaces_defaults = policymanager.policymanager_api.get_iface_defaults(module_name=self.__class__.__name__)
+        self.enable_l3_iface_forwarding_checks = utils.get_boolean_from_string(
+            policymanager.policymanager_api.get_module_globals(
+                self.__class__.__name__,
+                'enable_l3_iface_forwarding_checks'
+            )
+        )
 
         if not self.default_mtu:
             self.default_mtu = '1500'
@@ -127,7 +133,42 @@ class address(moduleBase):
         return (self.syntax_check_multiple_gateway(ifaceobj)
                 and self.syntax_check_addr_allowed_on(ifaceobj, True)
                 and self.syntax_check_mtu(ifaceobj, ifaceobj_getfunc)
-                and self.syntax_check_sysctls(ifaceobj))
+                and self.syntax_check_sysctls(ifaceobj)
+                and self.syntax_check_enable_l3_iface_forwardings(ifaceobj, ifaceobj_getfunc, syntax_check=True))
+
+    def syntax_check_enable_l3_iface_forwardings(self, ifaceobj, ifaceobj_getfunc, syntax_check=False):
+        if (self.enable_l3_iface_forwarding_checks
+                and (ifaceobj.link_kind & ifaceLinkKind.VLAN
+                     or ifaceobj.link_kind & ifaceLinkKind.BRIDGE)
+                and not ifaceobj.link_privflags & ifaceLinkPrivFlags.BRIDGE_PORT):
+
+            ifname = ifaceobj.name
+            vlan_addr = None
+            vlan_ipforward_off = None
+
+            for obj in ifaceobj_getfunc(ifname) or [ifaceobj]:
+                if not vlan_addr:
+                    vlan_addr = obj.get_attr_value('address')
+
+                if not vlan_ipforward_off:
+                    ip_forward_value = obj.get_attr_value_first('ip-forward')
+
+                    if ip_forward_value and not utils.get_boolean_from_string(ip_forward_value):
+                        vlan_ipforward_off = True
+
+                if vlan_addr and vlan_ipforward_off:
+                    if syntax_check:
+                        raise Exception(
+                            'configuring ip-forward off and ip address(es) (%s) is not compatible'
+                            % (', '.join(vlan_addr))
+                        )
+                    else:
+                        raise Exception(
+                            '%s: configuring ip-forward off and ip address(es) (%s) is not compatible'
+                            % (ifname, ', '.join(vlan_addr))
+                        )
+
+        return True
 
     def syntax_check_sysctls(self, ifaceobj):
         result = True
@@ -241,21 +282,21 @@ class address(moduleBase):
             # If user address is not in CIDR notation, convert them to CIDR
             for addr_index in range(0, len(addrs)):
                 addr = addrs[addr_index]
+                newaddr = addr
                 if '/' in addr:
                     newaddrs.append(addr)
-                    continue
-                newaddr = addr
-                netmask = ifaceobj.get_attr_value_n('netmask', addr_index)
-                if netmask:
-                    prefixlen = IPNetwork('%s' %addr +
-                                '/%s' %netmask).prefixlen
-                    newaddr = addr + '/%s' %prefixlen
                 else:
-                    # we are here because there is no slash (/xx) and no netmask
-                    # just let IPNetwork handle the ipv4 or ipv6 address mask
-                    prefixlen = IPNetwork(addr).prefixlen
-                    newaddr = addr + '/%s' %prefixlen
-                newaddrs.append(newaddr)
+                    netmask = ifaceobj.get_attr_value_n('netmask', addr_index)
+                    if netmask:
+                        prefixlen = IPNetwork('%s' %addr +
+                                    '/%s' %netmask).prefixlen
+                        newaddr = addr + '/%s' %prefixlen
+                    else:
+                        # we are here because there is no slash (/xx) and no netmask
+                        # just let IPNetwork handle the ipv4 or ipv6 address mask
+                        prefixlen = IPNetwork(addr).prefixlen
+                        newaddr = addr + '/%s' %prefixlen
+                    newaddrs.append(newaddr)
 
                 attrs = {}
                 for a in ['broadcast', 'pointopoint', 'scope',
@@ -413,17 +454,21 @@ class address(moduleBase):
 
         return ip4, ip6, ip4 + ip6
 
-    def _add_delete_gateway(self, ifaceobj, gateways=[], prev_gw=[]):
-        vrf = ifaceobj.get_attr_value_first('vrf')
-        metric = ifaceobj.get_attr_value_first('metric')
-        for del_gw in list(set(prev_gw) - set(gateways)):
+    def _delete_gateway(self, ifaceobj, gateways, vrf, metric):
+        for del_gw in gateways:
             try:
                 self.ipcmd.route_del_gateway(ifaceobj.name, del_gw, vrf, metric)
             except Exception as e:
                 self.logger.debug('%s: %s' % (ifaceobj.name, str(e)))
+
+    def _add_delete_gateway(self, ifaceobj, gateways=[], prev_gw=[]):
+        vrf = ifaceobj.get_attr_value_first('vrf')
+        metric = ifaceobj.get_attr_value_first('metric')
+        self._delete_gateway(ifaceobj, list(set(prev_gw) - set(gateways)),
+                             vrf, metric)
         for add_gw in gateways:
             try:
-                self.ipcmd.route_add_gateway(ifaceobj.name, add_gw, vrf)
+                self.ipcmd.route_add_gateway(ifaceobj.name, add_gw, vrf, metric)
             except Exception as e:
                 self.log_error('%s: %s' % (ifaceobj.name, str(e)))
 
@@ -505,9 +550,11 @@ class address(moduleBase):
         if mtu:
             if not self._check_mtu_config(ifaceobj, mtu, ifaceobj_getfunc):
                 return
-            running_mtu = self.ipcmd.link_get_mtu(ifaceobj.name)
+            cached_running_mtu = self.ipcmd.link_get_mtu(ifaceobj.name)
+            running_mtu = self.ipcmd.link_get_mtu_sysfs(ifaceobj.name)
             if not running_mtu or (running_mtu and running_mtu != mtu):
-                self.ipcmd.link_set(ifaceobj.name, 'mtu', mtu)
+                force = cached_running_mtu != running_mtu
+                self.ipcmd.link_set(ifaceobj.name, 'mtu', mtu, force=force)
                 if (not ifupdownflags.flags.ALL and
                     not ifaceobj.link_kind and
                     ifupdownConfig.config.get('adjust_logical_dev_mtu', '1') != '0'):
@@ -580,9 +627,14 @@ class address(moduleBase):
         mpls_enable = utils.boolean_support_binary(mpls_enable)
         # File read has been used for better performance
         # instead of using sysctl command
-        running_mpls_enable = self.read_file_oneline(
-                                '/proc/sys/net/mpls/conf/%s/input'
-                                %ifaceobj.name)
+        if ifupdownflags.flags.PERFMODE:
+            running_mpls_enable = '0'
+        else:
+            running_mpls_enable = self.read_file_oneline(
+                '/proc/sys/net/mpls/conf/%s/input'
+                % ifaceobj.name
+            )
+
         if mpls_enable != running_mpls_enable:
             try:
                 self.sysctl_set('net.mpls.conf.%s.input'
@@ -685,6 +737,9 @@ class address(moduleBase):
         if not self.ipcmd.link_exists(ifaceobj.name):
             return
 
+        if not self.syntax_check_enable_l3_iface_forwardings(ifaceobj, ifaceobj_getfunc):
+            return
+
         alias = ifaceobj.get_attr_value_first('alias')
         current_alias = self.ipcmd.link_get_alias(ifaceobj.name)
         if alias and alias != current_alias:
@@ -754,13 +809,11 @@ class address(moduleBase):
         except Exception, e:
             self.log_error('%s: %s' %(ifaceobj.name, str(e)), ifaceobj)
 
-        if addr_method != "dhcp":
-            gateways = ifaceobj.get_attr_value('gateway')
-            if not gateways:
-                gateways = []
-            prev_gw = self._get_prev_gateway(ifaceobj, gateways)
-            self._add_delete_gateway(ifaceobj, gateways, prev_gw)
-        return
+        gateways = ifaceobj.get_attr_value('gateway')
+        if not gateways:
+            gateways = []
+        prev_gw = self._get_prev_gateway(ifaceobj, gateways)
+        self._add_delete_gateway(ifaceobj, gateways, prev_gw)
 
     def _down(self, ifaceobj, ifaceobj_getfunc=None):
         try:
@@ -773,8 +826,15 @@ class address(moduleBase):
                     for addr in addrlist:
                         self.ipcmd.addr_del(ifaceobj.name, addr)
                     #self.ipcmd.addr_del(ifaceobj.name, ifaceobj.get_attr_value('address')[0])
-                else:
+                elif not ifaceobj.link_kind:
+                    # for logical interfaces we don't need to remove the ip addresses
+                    # kernel will do it for us on 'ip link del'
                     self.ipcmd.del_addr_all(ifaceobj.name)
+            gateways = ifaceobj.get_attr_value('gateway')
+            if gateways:
+                self._delete_gateway(ifaceobj, gateways,
+                                     ifaceobj.get_attr_value_first('vrf'),
+                                     ifaceobj.get_attr_value_first('metric'))
             mtu = ifaceobj.get_attr_value_first('mtu')
             if (not ifaceobj.link_kind and mtu and
                 self.default_mtu and (mtu != self.default_mtu)):
@@ -919,6 +979,9 @@ class address(moduleBase):
         if not runningaddrsdict and not addrs:
             return
         runningaddrs = runningaddrsdict.keys() if runningaddrsdict else []
+        # Add /32 netmask to configured address without netmask.
+        # This may happen on interfaces where pointopoint is used.
+        runningaddrs = [ addr if '/' in addr else addr + '/32' for addr in runningaddrs]
         if runningaddrs != addrs:
             runningaddrsset = set(runningaddrs) if runningaddrs else set([])
             addrsset = set(addrs) if addrs else set([])

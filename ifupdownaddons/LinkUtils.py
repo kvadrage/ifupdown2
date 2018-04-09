@@ -527,8 +527,10 @@ class LinkUtils(utilsBase):
                         linkattrs['kind'] = 'vrf'
                         linkCache.vrfs[ifname] = vattrs
                         break
+                    elif citems[i] == 'veth':
+                        linkattrs['kind'] = 'veth'
                     elif citems[i] == 'vrf_slave':
-                        linkattrs['kind'] = 'vrf_slave'
+                        linkattrs['slave_kind'] = 'vrf_slave'
                         break
                     elif citems[i] == 'macvlan' and citems[i + 1] == 'mode':
                         linkattrs['kind'] = 'macvlan'
@@ -697,7 +699,10 @@ class LinkUtils(utilsBase):
         if ifupdownflags.flags.DRYRUN:
             return
         try:
-            linkCache.del_attr(attrlist)
+            if value:
+                linkCache.remove_from_attrlist(attrlist, value)
+            else:
+                linkCache.del_attr(attrlist)
         except:
             pass
 
@@ -883,13 +888,13 @@ class LinkUtils(utilsBase):
                     scope = int(addr_details['scope'])
                 except Exception:
                     try:
-                        details = {}
+                        d = {}
                         addr_obj = IPNetwork(addr)
                         if isinstance(addr_obj, IPv6Network):
-                            details['family'] = 'inet6'
+                            d['family'] = 'inet6'
                         else:
-                            details['family'] = 'inet'
-                        running_addrs[addr] = details
+                            d['family'] = 'inet'
+                        running_addrs[addr] = d
                     except:
                         running_addrs[addr] = {}
                     continue
@@ -1010,10 +1015,10 @@ class LinkUtils(utilsBase):
         if not gateway:
             return
         if not vrf:
-            cmd = '%s route add default via %s' % (utils.ip_cmd,
+            cmd = '%s route add default via %s proto kernel' % (utils.ip_cmd,
                                                    gateway)
         else:
-            cmd = ('%s route add table %s default via %s' %
+            cmd = ('%s route add table %s default via %s proto kernel' %
                    (utils.ip_cmd, vrf, gateway))
         # Add metric
         if metric:
@@ -1027,29 +1032,15 @@ class LinkUtils(utilsBase):
         if not gateway:
             return
         if not vrf:
-            cmd = ('%s route del default via %s' %
+            cmd = ('%s route del default via %s proto kernel' %
                    (utils.ip_cmd, gateway))
         else:
-            cmd = ('%s route del table %s default via %s' %
+            cmd = ('%s route del table %s default via %s proto kernel' %
                    (utils.ip_cmd, vrf, gateway))
         if metric:
             cmd += ' metric %s' % metric
         cmd += ' dev %s' % ifacename
         utils.exec_command(cmd)
-
-    @staticmethod
-    def route6_add_gateway(ifacename, gateway):
-        if not gateway:
-            return
-        return utils.exec_command('%s -6 route add default via %s dev %s' %
-                                  (utils.ip_cmd, gateway, ifacename))
-
-    @staticmethod
-    def route6_del_gateway(ifacename, gateway):
-        if not gateway:
-            return
-        return utils.exec_command('%s -6 route del default via %s dev %s' %
-                                  (utils.ip_cmd, gateway, ifacename))
 
     def link_create_vlan(self, vlan_device_name, vlan_raw_device, vlanid):
         if self.link_exists(vlan_device_name):
@@ -1214,6 +1205,9 @@ class LinkUtils(utilsBase):
 
     def link_get_kind(self, ifacename):
         return self._cache_get('link', [ifacename, 'kind'])
+
+    def link_get_slave_kind(self, ifacename):
+        return self._cache_get('link', [ifacename, 'slave_kind'])
 
     def link_get_hwaddress(self, ifacename):
         address = self._cache_get('link', [ifacename, 'hwaddress'])
@@ -1912,7 +1906,7 @@ class LinkUtils(utilsBase):
 
     def bond_remove_slave(self, bondname, slave):
         slaves = self._link_cache_get([bondname, 'linkinfo', 'slaves'])
-        if slave not in slaves:
+        if not slaves or slave not in slaves:
             return
         sysfs_bond_path = ('/sys/class/net/%s' % bondname +
                            '/bonding/slaves')
