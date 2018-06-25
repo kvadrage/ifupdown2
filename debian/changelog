@@ -1,3 +1,22 @@
+ifupdown2 (1.2.0-cl3u19) UNRELEASED; urgency=medium
+
+  * Package architecture refactoring and cleanups
+  * Package can be build/install as debian, pip or rpm package
+  * Makefile to easily perform tasks (i.e.: install, build, test, upload..)
+  * New. Enabled: address addon "vlan_aware_bridge_address_support" policy
+  * New. Enabled: addressvirtual "addressvirtual_with_route_metric" policy
+  * New. Enabled: run up/down on "manual" interfaces, but ignore any errors
+  * New. Enabled: traditional bridge support for mstpctl attributes
+                  (portautoedge, portrestrrole)
+  * Closes: CM-15829: macvlan: add default metric to ip4 and ip6
+  * Closes: CM-21375: Add 'link-down yes' support for VRF slaves
+  * Closes: CM-16493: Configuration for IPv6 link-local auto-generate mode
+                      Two new attributes:
+                        ipv6-addrgen (address addon)
+                        address-virtual-ipv6-addrgen (addressvirtual addon)
+
+ -- dev-support <dev-support@cumulusnetworks.com>  Fri, 15 Jun 2018 13:05:40 +0200
+
 ifupdown2 (1.1-cl3u18) RELEASED; urgency=medium
 
   * Closes: CM-20069: Link down does not work on SVI configured in a VRF
