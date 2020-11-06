@@ -1164,6 +1164,12 @@ class bridge(Addon, moduleBase):
         self.iproute2.batch_commit()
         self.cache.force_add_slave_list(ifaceobj.name, newly_enslaved_ports)
 
+        if dummy_brport:
+            # to avoid any side effect with upper devices enslavement
+            # set the dummy port mac to be equal to the bridge mac 
+            bridge_mac = self.cache.get_link_address(ifaceobj.name)
+            self.netlink.link_set_address(dummy_brport, bridge_mac)
+
         if err:
             self.log_error('bridge configuration failed (missing ports)')
 
